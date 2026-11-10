@@ -49,9 +49,9 @@ describe('mnemonicToZpub — BTC BIP84 account key (published vector, char-for-c
  *  (1) keys.ts derives m/84'/2'/0'; a SECOND minimal HDKey path in the test
  *      (full private path to the leaf, a different call path) must produce the
  *      same address.
- *  (2) program equality: the published BTC account key re-versioned as `Ltub`
- *      yields ltc1 addresses whose witness programs equal the published bc1
- *      vectors' programs — pinning the Litecoin encoding to published data.
+ *  (2) program equality: the published BTC account key read as LTC (and, with
+ *      allowNonBip84, re-versioned as `Ltub`) yields ltc1 addresses whose witness
+ *      programs equal the published bc1 vectors' programs.
  */
 describe('LTC — independent cross-derivation (no published vectors exist)', () => {
   const seed = mnemonicToSeedSync(MNEMONIC, '');
@@ -63,43 +63,49 @@ describe('LTC — independent cross-derivation (no published vectors exist)', ()
     return bech32.encode('ltc', [0, ...bech32.toWords(program)]);
   }
 
-  it('keys.ts LTC account (Ltub) addresses match a second minimal HDKey leaf path', () => {
-    const { zpub } = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
+  it('keys.ts LTC account addresses match a second minimal HDKey leaf path', () => {
+    const { zpub } = mnemonicToZpub(MNEMONIC, { asset: 'LTC' });
     for (const change of [0, 1]) {
       for (const index of [0, 1, 2]) {
-        const fromAccount = zpubToAddress(zpub, { change: change as 0 | 1, index });
+        const fromAccount = zpubToAddress(zpub, { asset: 'LTC', change: change as 0 | 1, index });
         expect(fromAccount).toBe(ltcLeafAddress(change, index));
       }
     }
   });
 
   it('the independent node:crypto oracle agrees with keys.ts on the LTC account key', () => {
-    const { zpub } = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
-    // Oracle derives from the same Ltub account key, no shared code with src/.
+    const { zpub } = mnemonicToZpub(MNEMONIC, { asset: 'LTC' });
+    // Oracle derives from the same LTC account key, no shared code with src/.
     for (const index of [0, 1, 2]) {
       const oracle = refAddress(zpub, 'ltc', index, 0).address;
-      expect(zpubToAddress(zpub, { change: 0, index })).toBe(oracle);
+      expect(zpubToAddress(zpub, { asset: 'LTC', change: 0, index })).toBe(oracle);
     }
   });
 
   it('program equality: published BTC key re-versioned Ltub → ltc1 shares BTC vectors’ programs', () => {
     const ltub = reVersion(BIP84_ZPUB, LTUB_VERSION_HEX);
     for (const { change, index, address: btcAddr } of BTC_VECTORS) {
-      const ltcAddr = zpubToAddressForAsset(ltub, 'LTC', { change: change as 0 | 1, index });
+      const asZpub = zpubToAddressForAsset(BIP84_ZPUB, 'LTC', { change: change as 0 | 1, index });
+      const asLtub = zpubToAddressForAsset(ltub, 'LTC', {
+        change: change as 0 | 1,
+        index,
+        allowNonBip84: true,
+      });
+      expect(asLtub).toBe(asZpub);
       const btcProgram = bech32DecodeSegwit(btcAddr).program;
-      const ltcProgram = bech32DecodeSegwit(ltcAddr).program;
+      const ltcProgram = bech32DecodeSegwit(asZpub).program;
       expect(Buffer.from(ltcProgram).toString('hex')).toBe(Buffer.from(btcProgram).toString('hex'));
     }
   });
 
-  it('default LTC label emits the ambiguous zpub byte (still coin-2 key)', () => {
+  it('LTC emits the SLIP-132 BIP84 zpub byte (still coin-2 key)', () => {
     const def = mnemonicToZpub(MNEMONIC, { asset: 'LTC' });
-    const ltub = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
     expect(def.zpub.startsWith('zpub')).toBe(true);
-    expect(ltub.zpub.startsWith('Ltub')).toBe(true);
-    // Same underlying key, different SLIP-132 dress → same ltc1 addresses.
+    expect(inspectZpub(def.zpub).purpose).toBe('bip84');
+    // Same underlying key, Ltub dress (opt-in) → same ltc1 addresses.
+    const ltub = reVersion(def.zpub, LTUB_VERSION_HEX);
     expect(zpubToAddressForAsset(def.zpub, 'LTC', { index: 0 })).toBe(
-      zpubToAddress(ltub.zpub, { index: 0 }),
+      zpubToAddress(ltub, { index: 0, allowNonBip84: true }),
     );
   });
 });
@@ -165,7 +171,6 @@ describe('mainnet paths are unchanged by the testnet fix', () => {
     expect(mnemonicToZpub(MNEMONIC, { asset: 'BTC' }).path).toBe("m/84'/0'/0'");
     expect(mnemonicToZpub(MNEMONIC, { asset: 'BTC', network: 'mainnet' }).path).toBe("m/84'/0'/0'");
     expect(mnemonicToZpub(MNEMONIC, { asset: 'LTC' }).path).toBe("m/84'/2'/0'");
-    expect(mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' }).path).toBe("m/84'/2'/0'");
   });
 
   it('the mainnet BTC account zpub is byte-for-byte the published vector', () => {
@@ -201,7 +206,8 @@ describe('no-leak — seed-side outputs carry only PUBLIC material', () => {
   });
 
   it('seedToZpub returns only public material', () => {
-    assertNoPrivate(seedToZpub(seed, { asset: 'LTC', ltcLabel: 'Ltub' }));
+    assertNoPrivate(seedToZpub(seed, { asset: 'LTC' }));
+    assertNoPrivate(seedToZpub(seed, { asset: 'BTC', network: 'testnet' }));
   });
 
   it('a thrown error never echoes the mnemonic or seed', () => {

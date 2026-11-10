@@ -19,7 +19,7 @@ identity (NIP-06 `m/44'/1237'/0'/0/0` → `npub`) and a hierarchy of receiving k
 `zpub` → addresses). Where [`nostr-agentic-identity`](https://github.com/humanjavaenterprises/nostr-agentic-identity)
 defines *who an agent is*, this defines *where value reaches it* — Bitcoin and Litecoin.
 
-> Status: **DRAFT 0.1** · Read **[SPEC.md](SPEC.md)** first — it is authoritative; the code here is a thin,
+> Status: **0.2** · Read **[SPEC.md](SPEC.md)** first — it is authoritative; the code here is a thin,
 > audited-stack expression of it. Prior art it composes: `@scure/bip32` + `@scure/bip39` (audited HD
 > derivation), SLIP-132, BIP84/44, and `nostr-nsec-seedphrase` (BIP39 ↔ Nostr keys, optional).
 
@@ -42,7 +42,7 @@ sides:
 
 - 🔒 **Seed-side — enclave/client ONLY** (`mnemonicToZpub`, `seedToZpub`, `mnemonicToIdentity`). These touch
   the seed and MUST run only where the seed is allowed to live (a browser, a hardware enclave, an offline
-  signer) — **never a shared server**. They **output PUBLIC material only** — a `zpub`/`Ltub`, an `npub` — and
+  signer) — **never a shared server**. They **output PUBLIC material only** — a `zpub`/`vpub`, an `npub` — and
   never return, log, persist, or transmit the seed, the mnemonic, or any private byte.
 - 👁️ **Public-side — watch-only, safe anywhere** (`zpubToAddress`, `inspectZpub`, `assertPublicOnly`). Reads
   addresses off a public `zpub`. This side **mirrors [`hj-pay`](https://github.com/humanjavaenterprises)
@@ -59,24 +59,31 @@ the watch-only world. If a design needs the seed on a server to work, it is usin
 | Input | Path | Output |
 |---|---|---|
 | BIP39 mnemonic (+ optional passphrase) | BTC BIP84 `m/84'/0'/account'` | `zpub…` |
-| BIP39 mnemonic | LTC BIP84 `m/84'/2'/account'` | `zpub…` (default) or `Ltub…` |
-| a `zpub`/`Ltub` (public) | `.../change/index` | a receive address (`bc1…`/`ltc1…`) |
+| BIP39 mnemonic | LTC BIP84 `m/84'/2'/account'` | `zpub…` |
+| BIP39 mnemonic, `network: 'testnet'` | BIP84 `m/84'/1'/account'` (BTC and LTC) | `vpub…` |
+| a BIP84 `zpub`/`vpub` (public) | `.../change/index` | a receive address (`bc1…`/`ltc1…`/`tb1…`/`tltc1…`) |
 | a `zpub` | — | inspect: asset, network, purpose, SLIP-132 label, fingerprint |
 
 Account level (depth 3) is the export unit — the shape `hj-pay` expects.
+
+**Why LTC keys are `zpub`, never `Ltub`:** [SLIP-132](https://github.com/satoshilabs/slips/blob/master/slip-0132.md)
+registers no Litecoin native-segwit version. `Ltub` (`0x019da462`) is P2PKH, path `m/44'/2'`, and `Mtub`
+(`0x01b26ef6`) is P2WPKH-in-P2SH, path `m/49'/2'`. A BIP84 Litecoin account is therefore emitted under the
+BIP84 `zpub` byte (`vpub` on testnet), which is what Litecoin wallets use for native segwit. Before 0.2.0
+an `ltcLabel: 'Ltub'` option labelled the BIP84 key as BIP44; it was removed and now throws.
 
 ## Installation
 
 ```bash
 npm install nostr-zpub-utils
-# optional — only needed for mnemonicToIdentity's npub derivation:
+# optional peer (>=0.8.0 <0.10.0) — only needed for mnemonicToIdentity's npub derivation:
 npm install nostr-nsec-seedphrase
 ```
 
 Runtime deps are limited to the estate's audited stack (pinned exact): `@scure/bip32`, `@scure/bip39`,
 `@scure/base`, `@noble/hashes`, and `@scure/btc-signer` (the PSBT layer — `npm audit --omit=dev` clean at
-add time). `nostr-nsec-seedphrase` is an **optional peer** used only by `mnemonicToIdentity`; the core zpub
-derivation has no Nostr dependency.
+add time). `nostr-nsec-seedphrase` is an **optional peer** used only by `mnemonicToIdentity`; it is not installed for
+you, so a watch-only install stays small. The core zpub derivation has no Nostr dependency.
 
 ## Quick Start
 
@@ -89,11 +96,15 @@ import { mnemonicToZpub, mnemonicToIdentity } from 'nostr-zpub-utils';
 const { zpub, path, fingerprint } = mnemonicToZpub(MNEMONIC, { asset: 'BTC' });
 // zpub → hand to the watch-only world; the seed never leaves this enclave.
 
-// A Litecoin account, Litecoin-definite Ltub prefix:
-const ltc = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
+// A Litecoin account (m/84'/2'/0'), emitted under the SLIP-132 BIP84 zpub byte:
+const ltc = mnemonicToZpub(MNEMONIC, { asset: 'LTC' });
 
-// The one-root tie-in — PUBLIC anchors only (no nsec, ever):
+// The one-root tie-in — PUBLIC anchors only (no nsec, ever). Needs the optional peer
+// nostr-nsec-seedphrase. Always account 0, empty passphrase.
 const { npub, zpubBTC, zpubLTC } = await mnemonicToIdentity(MNEMONIC);
+
+// In a bundled app (browser, Workers), pass the peer in explicitly:
+const id = await mnemonicToIdentity(MNEMONIC, { seedphrase: await import('nostr-nsec-seedphrase') });
 ```
 
 ### Public-side — read addresses off a zpub (safe anywhere, incl. a server)
@@ -104,18 +115,29 @@ import { zpubToAddress, inspectZpub, assertPublicOnly, checkXpub, assertDistinct
 assertPublicOnly(zpub);                                    // throws on ANY private-key shape
 inspectZpub(zpub);                                         // { label, asset, network, purpose, depth, fingerprint }
 zpubToAddress(zpub, { asset: 'BTC', index: 0, change: 0 }); // 'bc1q…'
-zpubToAddress(ltubKey, { index: 0 });                      // 'ltc1…' — a chain-definite prefix needs no asset
+zpubToAddress(ltc.zpub, { asset: 'LTC', index: 0 });        // 'ltc1…'
 
 // Preflight before going live:
 checkXpub(zpub, 'BTC');                        // { ok, info, errors, warnings } — never throws
 assertDistinctXpubs(zpubBTC, zpubLTC);         // throws if the same key is configured for both chains
 ```
 
-> **The chain must be explicit for shared prefixes.** `xpub`/`zpub`/`tpub`/`vpub` are used by *both*
-> Bitcoin and Litecoin wallets — the version byte does not pin a chain. Calling `zpubToAddress` on such a key
-> **without `asset`** throws `AmbiguousAssetError` rather than silently defaulting to `bc1…` and handing out an
-> address no wallet is watching. A chain-definite prefix (`Ltub`/`Mtub`/`ttub`/`ypub`/`upub`) needs no
-> `asset`. Use `zpubToAddressForAsset(zpub, asset)` when you want to name the chain positionally.
+> **BIP84 version bytes and account keys only.** `zpubToAddress` / `zpubToAddressForAsset` derive BIP84
+> P2WPKH addresses, so by default they accept only the BIP84 versions: `zpub` (mainnet) and `vpub` (testnet).
+> Any other prefix (`xpub`/`tpub`/`Ltub`/`ttub`/`ypub`/`Mtub`/`upub`) throws `NonBip84KeyError`: the version
+> bytes don't say BIP84, so this library can't tell whether your wallet watches these addresses. Some wallets
+> export real native-segwit keys this way — Bitcoin Core and Litecoin Core descriptor wallets export
+> `xpub`/`tpub`, Ledger Live exports `xpub` (BTC) and `Ltub` (LTC). If your wallet exported this key for a
+> native-segwit (m/84') account, pass `{ allowNonBip84: true }`.
+>
+> The key must also be an ACCOUNT key (depth 3, `m/84'/coin'/account'`): a root, purpose, coin, chain or
+> address-level key throws `WrongDepthKeyError` unless `{ allowNonAccountDepth: true }`. Only `undefined` means
+> "default" for `index`/`change`; an explicit `null` throws.
+>
+> **The chain must be explicit for shared prefixes.** `zpub`/`vpub` are used by *both* Bitcoin and Litecoin
+> wallets — the version byte does not pin a chain. Calling `zpubToAddress` on such a key **without `asset`**
+> throws `AmbiguousAssetError` rather than silently defaulting to `bc1…` and handing out an address no wallet
+> is watching. Use `zpubToAddressForAsset(zpub, asset)` when you want to name the chain positionally.
 
 ### Spend-side — PSBT (ENCLAVE/CLIENT ONLY, CoinJoin-compatible)
 
@@ -169,7 +191,10 @@ const partiallySigned = mine.toPsbt();                         // hand back; a c
   reference implementation (the same oracle hj-pay's own tests use), pinning the two libraries together.
 - **LTC cross-check** — no published BIP84 LTC vectors exist, so a second minimal HDKey path and an
   independent oracle must agree with `keys.ts`, and the `ltc1…` witness programs must equal the published
-  BTC vectors' programs (via the re-versioned account key).
+  BTC vectors' programs.
+- **SLIP-132 conformance** — the version table matches the published SLIP-132 rows, every emitted key carries
+  the BIP84 version for its network, and every non-BIP84 version is refused by the address functions unless
+  `allowNonBip84` is set.
 - **Guard** — every private-key shape (`xprv/yprv/zprv/tprv/uprv/vprv/Ltpv/Mtpv/ttpv`, a raw scalar, a seed
   phrase, and a `zprv` re-versioned to wear a `zpub` prefix) is rejected by `assertPublicOnly` and by every
   public-path function.
@@ -177,7 +202,10 @@ const partiallySigned = mine.toPsbt();                         // hand back; a c
 
 ## Module Support
 
-Dual ESM + CommonJS, with a browser bundle and full type declarations.
+Dual ESM + CommonJS with full type declarations. Bundlers (Vite, webpack, esbuild) and Cloudflare Workers
+resolve the ESM build through the `browser` / `workerd` / `worker` export conditions. A minified IIFE for a
+plain `<script>` tag is served via unpkg/jsdelivr (`dist/browser/nostr-zpub-utils.min.js`, global
+`NostrZpubUtils`; the old `NostrZpubUtilities` name is kept as an alias). Node >= 20.
 
 ### ESM (recommended)
 ```typescript

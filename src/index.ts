@@ -31,13 +31,14 @@ export {
   PRIVATE_VERSIONS,
   PRIVATE_PREFIXES,
   HRP,
+  BIP84_PUBLIC_VERSION_HEX,
   outputVersionHex,
   type VersionRow,
 } from './versions.js';
 
 // ── SEED-SIDE (enclave/client only) ───────────────────────────────────────────
 export { seedToZpub, mnemonicToZpub } from './keys.js';
-export { mnemonicToIdentity } from './identity.js';
+export { mnemonicToIdentity, type IdentityOptions } from './identity.js';
 
 // ── PUBLIC-SIDE (watch-only, safe anywhere; mirrors hj-pay) ────────────────────
 export {
@@ -50,6 +51,8 @@ export {
   assertNoPrivateKeyMaterial,
   PrivateKeyMaterialError,
   AmbiguousAssetError,
+  NonBip84KeyError,
+  WrongDepthKeyError,
   type ZpubCheck,
 } from './derive.js';
 
@@ -57,12 +60,7 @@ export {
 // Build / merge / serialize / finalize are safe anywhere; ⛔ signOnlyOurInputs is
 // ENCLAVE/CLIENT-ONLY (it touches a private key). We participate in a CoinJoin; we
 // never coordinate one. No network: no UTXO fetching, no broadcast.
-export {
-  Psbt,
-  createPsbt,
-  psbtNetworkFor,
-  p2wpkhScript,
-} from './psbt.js';
+export { Psbt, createPsbt, psbtNetworkFor, p2wpkhScript } from './psbt.js';
 export type {
   PsbtConfig,
   PsbtOptions,

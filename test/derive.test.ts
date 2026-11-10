@@ -9,8 +9,8 @@ import {
 // The INDEPENDENT oracle (node:crypto only, shares no code with src/) — the
 // round-trip pin. hj-pay's own tests use this exact implementation, so agreeing
 // with it pins this library to hj-pay byte-for-byte.
-import { refAddress } from './ref-derive.mjs';
-import { MNEMONIC, BIP84_ZPUB, BIP84_FINGERPRINT, BTC_VECTORS } from './vectors.mjs';
+import { refAddress, reVersion } from './ref-derive.mjs';
+import { MNEMONIC, BIP84_ZPUB, BIP84_FINGERPRINT, BTC_VECTORS, LTUB_VERSION_HEX } from './vectors.mjs';
 
 describe('zpubToAddress — published BIP84 Bitcoin vectors (char-for-char)', () => {
   it.each(BTC_VECTORS)('$path -> $address', ({ change, index, address }) => {
@@ -63,14 +63,16 @@ describe('zpubToAddress — no silent wrong-chain default (LTC footgun)', () => 
     expect(addr.startsWith('bc1')).toBe(false);
   });
 
-  it('a chain-definite prefix still needs no asset (Ltub → ltc1)', () => {
-    const ltub = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
-    expect(zpubToAddress(ltub.zpub, { index: 0 }).startsWith('ltc1')).toBe(true);
+  it('a chain-definite prefix still needs no asset (Ltub → ltc1, with allowNonBip84)', () => {
+    const ltub = reVersion(mnemonicToZpub(MNEMONIC, { asset: 'LTC' }).zpub, LTUB_VERSION_HEX);
+    expect(zpubToAddress(ltub, { index: 0, allowNonBip84: true }).startsWith('ltc1')).toBe(true);
   });
 
   it('a conflicting explicit asset on a definite prefix is rejected', () => {
-    const ltub = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' });
-    expect(() => zpubToAddress(ltub.zpub, { asset: 'BTC', index: 0 })).toThrow(/mismatch/);
+    const ltub = reVersion(mnemonicToZpub(MNEMONIC, { asset: 'LTC' }).zpub, LTUB_VERSION_HEX);
+    expect(() =>
+      zpubToAddress(ltub, { asset: 'BTC', index: 0, allowNonBip84: true }),
+    ).toThrow(/mismatch/);
   });
 });
 

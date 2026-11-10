@@ -43,18 +43,63 @@ export interface VersionRow {
  */
 export const PUBLIC_VERSIONS: Record<string, VersionRow> = {
   // Bitcoin-registered mainnet (xpub/zpub also used by Litecoin wallets)
-  '0488b21e': { assets: ['BTC', 'LTC'], network: 'mainnet', label: 'xpub', purpose: 'bip44' },
-  '049d7cb2': { assets: ['BTC'], network: 'mainnet', label: 'ypub', purpose: 'bip49' },
-  '04b24746': { assets: ['BTC', 'LTC'], network: 'mainnet', label: 'zpub', purpose: 'bip84' },
+  '0488b21e': {
+    assets: ['BTC', 'LTC'],
+    network: 'mainnet',
+    label: 'xpub',
+    purpose: 'bip44',
+  },
+  '049d7cb2': {
+    assets: ['BTC'],
+    network: 'mainnet',
+    label: 'ypub',
+    purpose: 'bip49',
+  },
+  '04b24746': {
+    assets: ['BTC', 'LTC'],
+    network: 'mainnet',
+    label: 'zpub',
+    purpose: 'bip84',
+  },
   // Bitcoin-registered testnet
-  '043587cf': { assets: ['BTC', 'LTC'], network: 'testnet', label: 'tpub', purpose: 'bip44' },
-  '044a5262': { assets: ['BTC'], network: 'testnet', label: 'upub', purpose: 'bip49' },
-  '045f1cf6': { assets: ['BTC', 'LTC'], network: 'testnet', label: 'vpub', purpose: 'bip84' },
+  '043587cf': {
+    assets: ['BTC', 'LTC'],
+    network: 'testnet',
+    label: 'tpub',
+    purpose: 'bip44',
+  },
+  '044a5262': {
+    assets: ['BTC'],
+    network: 'testnet',
+    label: 'upub',
+    purpose: 'bip49',
+  },
+  '045f1cf6': {
+    assets: ['BTC', 'LTC'],
+    network: 'testnet',
+    label: 'vpub',
+    purpose: 'bip84',
+  },
   // Litecoin-definite mainnet
-  '019da462': { assets: ['LTC'], network: 'mainnet', label: 'Ltub', purpose: 'bip44' },
-  '01b26ef6': { assets: ['LTC'], network: 'mainnet', label: 'Mtub', purpose: 'bip49' },
+  '019da462': {
+    assets: ['LTC'],
+    network: 'mainnet',
+    label: 'Ltub',
+    purpose: 'bip44',
+  },
+  '01b26ef6': {
+    assets: ['LTC'],
+    network: 'mainnet',
+    label: 'Mtub',
+    purpose: 'bip49',
+  },
   // Litecoin-definite testnet
-  '0436f6e1': { assets: ['LTC'], network: 'testnet', label: 'ttub', purpose: 'bip44' },
+  '0436f6e1': {
+    assets: ['LTC'],
+    network: 'testnet',
+    label: 'ttub',
+    purpose: 'bip44',
+  },
 };
 
 /**
@@ -97,17 +142,54 @@ export const HRP: Record<ChainAsset, Record<ChainNetwork, string>> = {
 /** The neutral xpub version — every accepted key is re-serialized to this for @scure/bip32. */
 export const XPUB_VERSION = new Uint8Array([0x04, 0x88, 0xb2, 0x1e]);
 
+/** The SLIP-132 BIP84 (native-segwit P2WPKH) PUBLIC version bytes, per network. */
+export const BIP84_PUBLIC_VERSION_HEX: Record<ChainNetwork, string> = {
+  mainnet: '04b24746', // zpub
+  testnet: '045f1cf6', // vpub
+};
+
 /**
- * The extended PUBLIC version byte this library EMITS for a given asset / network /
- * label choice. BTC and (default) LTC native-segwit accounts serialize under the
- * registered `zpub` byte; Litecoin callers may opt into the Litecoin-definite `Ltub`.
+ * The extended PUBLIC version byte this library EMITS for a given asset / network.
+ *
+ * This library only emits BIP84 account keys, so the answer is always the SLIP-132
+ * BIP84 byte: `zpub` on mainnet, `vpub` on testnet — for BTC and LTC alike.
+ * SLIP-132 registers NO Litecoin native-segwit version: Litecoin's `Ltub`
+ * (0x019da462) is P2PKH, path m/44'/2' and `Mtub` (0x01b26ef6) is P2WPKH-in-P2SH,
+ * path m/49'/2'. Serializing an m/84'/2' key as `Ltub` would therefore label a BIP84
+ * key as BIP44, which wallets and this library's own {@link PUBLIC_VERSIONS} read
+ * as a different script type. That option (`ltcLabel: 'Ltub'`, ≤0.1.x) was removed
+ * in 0.2.0; passing it throws.
+ *
+ * @param asset - BTC or LTC (both use the BIP84 byte)
+ * @param network - mainnet (zpub) or testnet (vpub)
+ * @param ltcLabel - only `'zpub'` (the default) is accepted
  */
 export function outputVersionHex(
   asset: ChainAsset,
   network: ChainNetwork,
-  ltcLabel: 'zpub' | 'Ltub' = 'zpub',
+  ltcLabel: 'zpub' = 'zpub',
 ): string {
-  if (network === 'testnet') return '045f1cf6'; // vpub — BIP84 testnet public
-  if (asset === 'LTC' && ltcLabel === 'Ltub') return '019da462'; // Ltub (BIP44 SLIP-132; Litecoin-definite)
-  return '04b24746'; // zpub — BIP84 mainnet public
+  if (asset !== 'BTC' && asset !== 'LTC') {
+    throw new Error(`asset must be 'BTC' or 'LTC', got ${describeValue(asset)}`);
+  }
+  if (network !== 'mainnet' && network !== 'testnet') {
+    throw new Error(`network must be 'mainnet' or 'testnet', got ${describeValue(network)}`);
+  }
+  if ((ltcLabel as unknown) !== 'zpub') {
+    throw new Error(
+      `ltcLabel ${describeValue(ltcLabel)} is not supported. SLIP-132 has no Litecoin BIP84 ` +
+        "version: 'Ltub' is the BIP44 (m/44'/2') byte, so an m/84'/2' key labelled Ltub " +
+        "would be read as BIP44 by wallets. LTC native-segwit keys are emitted as 'zpub' " +
+        "(mainnet) / 'vpub' (testnet); omit ltcLabel.",
+    );
+  }
+  return BIP84_PUBLIC_VERSION_HEX[network];
+}
+
+/** A short, safe description of an arbitrary value for an error message. */
+export function describeValue(v: unknown): string {
+  if (v === null) return 'null';
+  if (typeof v === 'string') return v.length > 24 ? `a ${v.length}-char string` : JSON.stringify(v);
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'undefined') return String(v);
+  return Array.isArray(v) ? 'an array' : `a ${typeof v}`;
 }

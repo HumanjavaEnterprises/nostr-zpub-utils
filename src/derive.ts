@@ -28,6 +28,8 @@ import {
   PRIVATE_PREFIXES,
   HRP,
   XPUB_VERSION,
+  BIP84_PUBLIC_VERSION_HEX,
+  describeValue,
   type ChainAsset,
 } from './versions.js';
 import type { ZpubInfo, AddressOptions } from './types.js';
@@ -54,6 +56,38 @@ export class AmbiguousAssetError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AmbiguousAssetError';
+  }
+}
+
+/**
+ * Thrown when {@link zpubToAddress} / {@link zpubToAddressForAsset} are handed a key
+ * whose SLIP-132 version bytes are not the BIP84 ones for its network (`zpub` on
+ * mainnet, `vpub` on testnet). This library only derives BIP84 P2WPKH addresses, and
+ * the version bytes of an `xpub`/`tpub`/`Ltub`/`ypub`/… don't say BIP84, so it can't
+ * tell whether the wallet watches P2WPKH under that key. Some wallets DO export real
+ * native-segwit (m/84') account keys under other version bytes — Bitcoin Core and
+ * Litecoin Core descriptor wallets (`xpub`/`tpub`), Ledger Live (`xpub` for BTC,
+ * `Ltub` for LTC). If your wallet exported this key for a native-segwit account, pass
+ * `{ allowNonBip84: true }`.
+ */
+export class NonBip84KeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonBip84KeyError';
+  }
+}
+
+/**
+ * Thrown when {@link zpubToAddress} / {@link zpubToAddressForAsset} are handed a key
+ * whose BIP32 depth is not 3. Addresses are derived as `<key>/<change>/<index>`, which
+ * is only right for an ACCOUNT key (`m/84'/coin'/account'`). A root, purpose, coin,
+ * chain or address-level key would produce addresses no wallet watches. Pass
+ * `{ allowNonAccountDepth: true }` only if you really mean to derive below such a key.
+ */
+export class WrongDepthKeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WrongDepthKeyError';
   }
 }
 
@@ -98,14 +132,18 @@ function resolveAsset(info: ZpubInfo, requested?: ChainAsset): ChainAsset {
  * @param label - a name for the value, used in the error message
  */
 export function assertNoPrivateKeyMaterial(value: string, label = 'value'): void {
-  const v = (value ?? '').trim();
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string, got ${describeValue(value)}`);
+  }
+  const v = value.trim();
   if (!v) return;
   for (const p of PRIVATE_PREFIXES) {
     if (v.startsWith(p)) {
       throw new PrivateKeyMaterialError(
         `${label} looks like PRIVATE key material ("${p}…"). ` +
           'This library is watch-only on the public side and must never receive a private key. ' +
-          'Supply the extended PUBLIC key (zpub/xpub/Ltub).',
+          'Supply the extended PUBLIC key (zpub/vpub).',
       );
     }
   }
@@ -124,12 +162,17 @@ export function assertNoPrivateKeyMaterial(value: string, label = 'value'): void
 
 interface Decoded {
   info: ZpubInfo;
+  /** The 4 SLIP-132 version bytes, hex. */
+  version: string;
   /** The same key re-serialized under the plain xpub version, for @scure/bip32. */
   neutral: string;
 }
 
 function decodeZpub(zpub: string, label = 'zpub'): Decoded {
-  if (typeof zpub !== 'string' || zpub.trim() === '') {
+  if (typeof zpub !== 'string') {
+    throw new Error(`${label} must be a string, got ${describeValue(zpub)}`);
+  }
+  if (zpub.trim() === '') {
     throw new Error(`${label} is empty`);
   }
   const s = zpub.trim();
@@ -182,6 +225,7 @@ function decodeZpub(zpub: string, label = 'zpub'): Decoded {
   const identifier = ripemd160(sha256(raw.slice(45, 78)));
 
   return {
+    version,
     info: {
       label: row.label,
       assets: row.assets,
@@ -230,58 +274,99 @@ export function inspectZpub(zpub: string, label = 'zpub'): ZpubInfo {
  * → `deriveChild(change).deriveChild(index)` → hash160(pubkey) → witness-v0 bech32.
  * Deterministic: same (zpub, index, change) → same address, forever.
  *
+ * Only BIP84 version bytes are accepted by default: `zpub` (mainnet) or `vpub`
+ * (testnet). Any other SLIP-132 version (`xpub`/`tpub`/`Ltub`/`ttub`/`ypub`/`Mtub`/
+ * `upub`) throws a {@link NonBip84KeyError}: those bytes don't say BIP84, so the
+ * library can't tell whether the wallet watches these P2WPKH addresses. If your
+ * wallet exported the key for a native-segwit (m/84') account (Bitcoin Core / Litecoin
+ * Core descriptors, Ledger Live do this), pass `{ allowNonBip84: true }`.
+ *
+ * Only ACCOUNT keys (depth 3) are accepted by default; any other depth throws a
+ * {@link WrongDepthKeyError} unless `{ allowNonAccountDepth: true }`.
+ *
  * @param zpub - the account-level extended public key (depth 3)
- * @param opts - `index` (default 0), `change` (0 receive / 1 change), `network`
- * @returns a `bc1…` (BTC) or `ltc1…` (LTC) native-segwit address
+ * @param opts - `index` (default 0), `change` (0 receive / 1 change), `asset`, `network`,
+ *   `allowNonBip84`, `allowNonAccountDepth`
+ * @returns a `bc1…`/`tb1…` (BTC) or `ltc1…`/`tltc1…` (LTC) native-segwit address
  */
-export function zpubToAddress(zpub: string, opts: AddressOptions = {}): string {
-  const index = opts.index ?? 0;
-  if (!Number.isInteger(index) || index < 0 || index >= HARDENED) {
-    throw new Error(`derivation index must be an integer in [0, 2^31), got ${index}`);
-  }
-  const change = opts.change ?? 0;
-  if (change !== 0 && change !== 1) {
-    throw new Error(`change must be 0 or 1, got ${change}`);
-  }
-
-  const { info, neutral } = decodeZpub(zpub, 'zpub');
-  if (opts.network && opts.network !== info.network) {
-    throw new Error(
-      `network mismatch — ${info.label} is ${info.network}, ${opts.network} was requested`,
-    );
-  }
-  // SAFE BY DEFAULT: a definite prefix pins the chain; an AMBIGUOUS prefix forces
-  // the caller to name `asset` (throws otherwise). We never silently guess BTC.
-  const asset = resolveAsset(info, opts.asset);
-  return encodeP2wpkh(neutral, asset, info.network, change, index);
+export function zpubToAddress(zpub: string, opts?: AddressOptions | null): string {
+  const o = normalizeAddressOptions(opts);
+  return deriveAddress(zpub, o, o.asset);
 }
 
 /**
  * Same as {@link zpubToAddress}, but pins the chain explicitly (for the ambiguous
- * `xpub`/`zpub` prefixes that both BTC and LTC wallets emit). The HRP is taken
+ * `zpub`/`vpub` prefixes that both BTC and LTC wallets emit). The HRP is taken
  * from `asset`; the version's own network still governs mainnet vs testnet.
  */
 export function zpubToAddressForAsset(
   zpub: string,
   asset: ChainAsset,
-  opts: AddressOptions = {},
+  opts?: AddressOptions | null,
 ): string {
-  const index = opts.index ?? 0;
+  if (asset !== 'BTC' && asset !== 'LTC') {
+    throw new Error(`asset must be 'BTC' or 'LTC', got ${describeValue(asset)}`);
+  }
+  return deriveAddress(zpub, normalizeAddressOptions(opts), asset);
+}
+
+function normalizeAddressOptions(opts: AddressOptions | null | undefined): AddressOptions {
+  if (opts === undefined || opts === null) return {};
+  if (typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new Error(`address options must be an object, got ${describeValue(opts)}`);
+  }
+  return opts;
+}
+
+function deriveAddress(zpub: string, opts: AddressOptions, requested?: ChainAsset): string {
+  // Only `undefined` means "default"; an explicit null is a caller bug, not index 0.
+  const index = opts.index === undefined ? 0 : opts.index;
   if (!Number.isInteger(index) || index < 0 || index >= HARDENED) {
-    throw new Error(`derivation index must be an integer in [0, 2^31), got ${index}`);
+    throw new Error(
+      `derivation index must be an integer in [0, 2^31), got ${describeValue(index)}`,
+    );
   }
-  const change = opts.change ?? 0;
+  const change = opts.change === undefined ? 0 : opts.change;
   if (change !== 0 && change !== 1) {
-    throw new Error(`change must be 0 or 1, got ${change}`);
+    throw new Error(`change must be 0 or 1, got ${describeValue(change)}`);
   }
-  const { info, neutral } = decodeZpub(zpub, 'zpub');
+  if (requested !== undefined && requested !== 'BTC' && requested !== 'LTC') {
+    throw new Error(`asset must be 'BTC' or 'LTC', got ${describeValue(requested)}`);
+  }
+  if (opts.network !== undefined && opts.network !== 'mainnet' && opts.network !== 'testnet') {
+    throw new Error(`network must be 'mainnet' or 'testnet', got ${describeValue(opts.network)}`);
+  }
+
+  const { info, version, neutral } = decodeZpub(zpub, 'zpub');
   if (opts.network && opts.network !== info.network) {
     throw new Error(
       `network mismatch — ${info.label} is ${info.network}, ${opts.network} was requested`,
     );
   }
-  const resolved = resolveAsset(info, asset);
-  return encodeP2wpkh(neutral, resolved, info.network, change, index);
+  // SAFE BY DEFAULT: only the BIP84 version for the key's network is derived from.
+  if (version !== BIP84_PUBLIC_VERSION_HEX[info.network] && opts.allowNonBip84 !== true) {
+    const want = info.network === 'mainnet' ? 'zpub' : 'vpub';
+    throw new NonBip84KeyError(
+      `zpub: the version bytes of this ${info.label} don't say BIP84 (expected a ${want} for ` +
+        `${info.network}), so this library can't tell whether your wallet watches the P2WPKH ` +
+        "addresses it derives. If your wallet exported this key for a native-segwit (m/84') " +
+        'account — Bitcoin Core / Litecoin Core descriptor wallets export xpub/tpub, Ledger Live ' +
+        'exports xpub (BTC) / Ltub (LTC) — pass { allowNonBip84: true }. Otherwise export the ' +
+        'native-segwit account key from your wallet.',
+    );
+  }
+  if (info.depth !== 3 && opts.allowNonAccountDepth !== true) {
+    throw new WrongDepthKeyError(
+      `zpub: BIP32 depth is ${info.depth}, expected 3 (an ACCOUNT key, m/84'/coin'/account'). ` +
+        'Addresses are derived as <key>/<change>/<index>, so a key at any other depth yields ' +
+        'addresses your wallet is not watching. Export the account-level key, or pass ' +
+        '{ allowNonAccountDepth: true } if you really mean to derive below this key.',
+    );
+  }
+  // A definite prefix pins the chain; an AMBIGUOUS prefix forces the caller to name
+  // `asset` (throws otherwise). We never silently guess BTC.
+  const asset = resolveAsset(info, requested);
+  return encodeP2wpkh(neutral, asset, info.network, change, index);
 }
 
 export interface ZpubCheck {
@@ -331,13 +416,16 @@ export function checkXpub(zpub: string, asset: ChainAsset, label = 'zpub'): Zpub
   if (info.depth !== 3) {
     warnings.push(
       `${label}: BIP32 depth is ${info.depth}, expected 3 (an ACCOUNT key, m/84'/coin'/0'). ` +
-        'Addresses will be derived as <key>/<change>/<index> — confirm that matches your wallet.',
+        'Addresses are derived as <key>/<change>/<index> — zpubToAddress refuses this key unless ' +
+        '{ allowNonAccountDepth: true }.',
     );
   }
   if (info.purpose !== 'bip84') {
     warnings.push(
       `${label}: prefix "${info.label}" implies ${info.purpose}, but this library always emits BIP84 ` +
-        'P2WPKH. Export the NATIVE SEGWIT account key from your wallet so it watches these addresses.',
+        'P2WPKH. Export the NATIVE SEGWIT account key from your wallet so it watches these addresses ' +
+        '(zpubToAddress refuses this key unless { allowNonBip84: true }; pass it if your wallet ' +
+        "exported this key for a native-segwit m/84' account).",
     );
   }
   return { ok: errors.length === 0, info, errors, warnings };

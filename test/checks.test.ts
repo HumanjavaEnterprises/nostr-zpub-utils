@@ -65,7 +65,7 @@ describe('assertDistinctXpubs — catch the same key on both chains', () => {
 
   it('passes when the two account keys genuinely differ (BTC coin 0 vs LTC coin 2)', () => {
     const btc = mnemonicToZpub(MNEMONIC, { asset: 'BTC' }).zpub;
-    const ltc = mnemonicToZpub(MNEMONIC, { asset: 'LTC', ltcLabel: 'Ltub' }).zpub;
+    const ltc = mnemonicToZpub(MNEMONIC, { asset: 'LTC' }).zpub;
     expect(() => assertDistinctXpubs(btc, ltc)).not.toThrow();
   });
 });

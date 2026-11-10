@@ -16,7 +16,7 @@ We release patches for security vulnerabilities. Which versions are eligible for
 - **Seed-side functions (`mnemonicToZpub`, `seedToZpub`, `mnemonicToIdentity`) are ENCLAVE/CLIENT-ONLY.**
   They touch the seed and MUST run only where the seed is allowed to live — a browser, a hardware enclave,
   an offline signer — **never on a shared server, a receiving rail, or any host the seed shouldn't reach.**
-  They output PUBLIC material only (`zpub`/`Ltub`/`npub`) and never return, log, persist, or transmit the
+  They output PUBLIC material only (`zpub`/`vpub`/`npub`) and never return, log, persist, or transmit the
   seed, the mnemonic, or any private/extended-private key byte. A conforming caller keeps the seed in the
   enclave and hands only the resulting `zpub` to the outside world.
 

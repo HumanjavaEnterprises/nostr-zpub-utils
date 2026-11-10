@@ -25,7 +25,7 @@ seed — no separate wallet, no custody, deterministic and recoverable.
   **client-side / enclave-side ONLY** (browser, NSE hardware enclave, an offline signer).
   They MUST NOT run on a shared server, a receiving rail, or anywhere the seed shouldn't
   live. This is the exact inverse of `hj-pay`, which is watch-only and never sees a seed.
-- The library **outputs only PUBLIC material** — a `zpub` (or `Ltub`), or addresses.
+- The library **outputs only PUBLIC material** — a BIP84 `zpub` (`vpub` on testnet), or addresses.
   From that point on, everything is watch-only: `hj-pay` takes the `zpub` and derives
   addresses to receive. The seed never leaves the enclave.
 - The library **never persists, logs, or transmits** seed/mnemonic/private bytes, and
@@ -41,8 +41,8 @@ work, it is using this library wrong.
 | Input | Path | Output |
 |---|---|---|
 | BIP39 mnemonic (+ optional passphrase) | BTC BIP84 `m/84'/0'/account'` | `zpub…` |
-| BIP39 mnemonic | LTC BIP84 `m/84'/2'/account'` | `zpub…` (default) or `Ltub…` |
-| a `zpub`/`Ltub` (public) | `.../change/index` | a receive address (`bc1…`/`ltc1…`) |
+| BIP39 mnemonic | LTC BIP84 `m/84'/2'/account'` | `zpub…` (SLIP-132 has no Litecoin BIP84 byte; `Ltub` is BIP44) |
+| a BIP84 `zpub`/`vpub` (public) | `.../change/index` | a receive address (`bc1…`/`ltc1…`) |
 | a `zpub` | — | inspect: asset, network, purpose, SLIP-132 label |
 
 Account level (depth 3) is the export unit — the same shape `hj-pay` expects. Address
@@ -55,15 +55,19 @@ about which address a `zpub` produces.
 ```ts
 // SEED-SIDE (enclave only) — produce public receiving keys from the identity root
 mnemonicToZpub(mnemonic: string, opts?: { asset?: 'BTC'|'LTC'; account?: number;
-              passphrase?: string; ltcLabel?: 'zpub'|'Ltub'; network?: 'mainnet'|'testnet' }): {
+              passphrase?: string; network?: 'mainnet'|'testnet' }): {
   zpub: string; path: string; asset: 'BTC'|'LTC'; fingerprint: string }
 seedToZpub(seed: Uint8Array, opts?): { … }            // lower level, same shape
-mnemonicToIdentity(mnemonic: string): {               // the tie-in, one root:
-  npub: string; zpubBTC: string; zpubLTC: string }    // ⚠️ derives via nostr-nsec-seedphrase;
+mnemonicToIdentity(mnemonic: string, opts?: { seedphrase? }): Promise<{ // the tie-in, one root:
+  npub: string; zpubBTC: string; zpubLTC: string }>   // ⚠️ derives via nostr-nsec-seedphrase (optional peer);
                                                       //    returns PUBLIC anchors only (no nsec)
 
 // PUBLIC-SIDE (safe anywhere) — watch-only, mirrors hj-pay
-zpubToAddress(zpub: string, opts?: { index?: number; change?: 0|1 }): string
+zpubToAddress(zpub: string, opts?: { index?: number; change?: 0|1; asset?: 'BTC'|'LTC';
+              network?: 'mainnet'|'testnet'; allowNonBip84?: boolean;
+              allowNonAccountDepth?: boolean }): string
+                                                      // BIP84 version bytes (zpub/vpub) and depth-3 keys
+                                                      // only, unless the matching opt-in is set
 inspectZpub(zpub: string): { asset; network; purpose; label; fingerprint }
 assertPublicOnly(key: string): void                   // throws on any xprv/zprv/Ltpv/seed shape
 ```

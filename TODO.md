@@ -11,6 +11,10 @@
 
 - [ ] Keep `versions.ts` `PUBLIC_VERSIONS` in lockstep with `hj-pay` (`colabrelay.sdk` `src/pay/derive.ts`).
       A CI check that diffs the two maps would prevent silent drift.
+- [ ] hj-pay parity: since 0.2.0 `zpubToAddress` refuses non-BIP84 versions (xpub/Ltub/ypub/…) unless
+      `allowNonBip84: true`. Addresses for accepted keys are unchanged; decide whether hj-pay adopts the
+      same refusal so the two libraries also agree on what they reject.
+- [ ] Retag: tag `v0.1.1` points before the rename commit `319ccc1` (the published 0.1.1 is the renamed build).
 - [ ] Consider re-exporting a small `deriveAddresses(zpub, count)` gap-scan helper (hj-pay has one) if a
       consumer needs it — kept out of 0.1 as a non-goal.
 - [ ] Add published-vector coverage for a passphrase ("25th word") case if a canonical vector surfaces.

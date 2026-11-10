@@ -32,7 +32,7 @@ import { Transaction, NETWORK, TEST_NETWORK, p2wpkh } from '@scure/btc-signer';
 import { hex } from '@scure/base';
 import type { HDKey } from '@scure/bip32';
 
-import type { ChainAsset, ChainNetwork } from './versions.js';
+import { describeValue, type ChainAsset, type ChainNetwork } from './versions.js';
 
 /**
  * The four network bytes `@scure/btc-signer` needs to encode/decode addresses.
@@ -60,6 +60,13 @@ const LTC_TESTNET: PsbtNetwork = { bech32: 'tltc', pubKeyHash: 0x6f, scriptHash:
 
 /** Resolve the `@scure/btc-signer` network params for an asset + network. */
 export function psbtNetworkFor(asset: ChainAsset, network: ChainNetwork = 'mainnet'): PsbtNetwork {
+  // Validate explicitly: an unknown asset must never fall through to Litecoin params.
+  if (asset !== 'BTC' && asset !== 'LTC') {
+    throw new Error(`Psbt: asset must be 'BTC' or 'LTC', got ${describeValue(asset)}`);
+  }
+  if (network !== 'mainnet' && network !== 'testnet') {
+    throw new Error(`Psbt: network must be 'mainnet' or 'testnet', got ${describeValue(network)}`);
+  }
   if (asset === 'BTC') return network === 'testnet' ? TEST_NETWORK : NETWORK;
   return network === 'testnet' ? LTC_TESTNET : LTC_MAINNET;
 }
@@ -122,6 +129,17 @@ export interface SignResult {
   skipped: number[];
 }
 
+function requireObject<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Psbt: ${what} must be an object, got ${describeValue(value)}`);
+  }
+  return value;
+}
+
+function optionsOrEmpty(opts: PsbtOptions | null | undefined): PsbtOptions {
+  return opts === undefined || opts === null ? {} : requireObject(opts, 'options');
+}
+
 function txidBytes(txid: Uint8Array | string): Uint8Array {
   if (typeof txid === 'string') {
     if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
@@ -148,11 +166,13 @@ export class Psbt {
   readonly network: ChainNetwork;
   private readonly net: PsbtNetwork;
 
-  constructor(config: PsbtConfig, opts: PsbtOptions = {}) {
-    this.asset = config.asset;
-    this.network = config.network ?? 'mainnet';
+  constructor(config: PsbtConfig, opts?: PsbtOptions | null) {
+    const c = requireObject(config, 'config');
+    const o = optionsOrEmpty(opts);
+    this.asset = c.asset;
+    this.network = c.network ?? 'mainnet';
     this.net = psbtNetworkFor(this.asset, this.network);
-    this.tx = new Transaction({ version: opts.version, lockTime: opts.lockTime });
+    this.tx = new Transaction({ version: o.version, lockTime: o.lockTime });
   }
 
   /**
@@ -162,12 +182,18 @@ export class Psbt {
    * indices before handing it back. This is the "merge external inputs+outputs into
    * a shared PSBT" half of CoinJoin participation.
    */
-  static fromPsbt(psbtBytes: Uint8Array, config: PsbtConfig, opts: PsbtOptions = {}): Psbt {
-    const wrapper = new Psbt(config, opts);
+  static fromPsbt(psbtBytes: Uint8Array, config: PsbtConfig, opts?: PsbtOptions | null): Psbt {
+    if (!(psbtBytes instanceof Uint8Array)) {
+      throw new Error(
+        `Psbt.fromPsbt: psbtBytes must be a Uint8Array, got ${describeValue(psbtBytes)}`,
+      );
+    }
+    const o = optionsOrEmpty(opts);
+    const wrapper = new Psbt(config, o);
     // Replace the empty tx with the parsed one (readonly field set once here).
     (wrapper as { tx: Transaction }).tx = Transaction.fromPSBT(psbtBytes, {
-      version: opts.version,
-      lockTime: opts.lockTime,
+      version: o.version,
+      lockTime: o.lockTime,
     });
     return wrapper;
   }
@@ -184,6 +210,8 @@ export class Psbt {
 
   /** Add an input to spend (caller-supplied prevout). Returns the new input's index. */
   addInput(input: PsbtInput): number {
+    requireObject(input, 'input');
+    requireObject(input.witnessUtxo, 'input.witnessUtxo');
     return this.tx.addInput({
       txid: txidBytes(input.txid),
       index: input.index,
@@ -198,11 +226,20 @@ export class Psbt {
 
   /** Add an output. Give `address` (encoded for this PSBT's network) OR a raw `script`. Returns its index. */
   addOutput(output: PsbtOutput): number {
+    requireObject(output, 'output');
+    if (typeof output.amount !== 'bigint') {
+      throw new Error(
+        `Psbt.addOutput: amount must be a bigint (satoshis), got ${describeValue(output.amount)}`,
+      );
+    }
     if (output.address) {
       return this.tx.addOutputAddress(output.address, output.amount, this.net);
     }
     if (output.script) {
-      return this.tx.addOutput({ script: output.script, amount: output.amount });
+      return this.tx.addOutput({
+        script: output.script,
+        amount: output.amount,
+      });
     }
     throw new Error('Psbt.addOutput: provide either `address` or `script`');
   }
@@ -268,10 +305,10 @@ export class Psbt {
     const inp = this.tx.getInput(idx);
     return Boolean(
       (inp.partialSig && inp.partialSig.length) ||
-        inp.finalScriptWitness ||
-        inp.finalScriptSig ||
-        inp.tapKeySig ||
-        (inp.tapScriptSig && inp.tapScriptSig.length),
+      inp.finalScriptWitness ||
+      inp.finalScriptSig ||
+      inp.tapKeySig ||
+      (inp.tapScriptSig && inp.tapScriptSig.length),
     );
   }
 
@@ -281,8 +318,10 @@ export class Psbt {
    * inputs). Accepts a {@link Psbt} or raw PSBT bytes. Returns `this` for chaining.
    */
   combine(other: Psbt | Uint8Array): this {
-    const otherTx =
-      other instanceof Uint8Array ? Transaction.fromPSBT(other) : other.tx;
+    if (!(other instanceof Uint8Array) && !(other instanceof Psbt)) {
+      throw new Error(`Psbt.combine: expected a Psbt or PSBT bytes, got ${describeValue(other)}`);
+    }
+    const otherTx = other instanceof Uint8Array ? Transaction.fromPSBT(other) : other.tx;
     this.tx.combine(otherTx);
     return this;
   }
@@ -310,7 +349,7 @@ export class Psbt {
 }
 
 /** Convenience: a new, empty PSBT for the given asset/network. Equivalent to `new Psbt(config, opts)`. */
-export function createPsbt(config: PsbtConfig, opts: PsbtOptions = {}): Psbt {
+export function createPsbt(config: PsbtConfig, opts?: PsbtOptions | null): Psbt {
   return new Psbt(config, opts);
 }
 
@@ -325,7 +364,11 @@ export function p2wpkhScript(
   network: ChainNetwork = 'mainnet',
 ): Uint8Array {
   const net = psbtNetworkFor(asset, network);
+  if (!(publicKey instanceof Uint8Array) || publicKey.length !== 33) {
+    throw new Error('p2wpkhScript: publicKey must be a 33-byte compressed public key (Uint8Array)');
+  }
   const script = p2wpkh(publicKey, net).script;
-  if (!script) throw new Error('p2wpkhScript: could not derive a P2WPKH script from the public key');
+  if (!script)
+    throw new Error('p2wpkhScript: could not derive a P2WPKH script from the public key');
   return script;
 }

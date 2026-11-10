@@ -7,14 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Notes
-- The PSBT layer adds `@scure/btc-signer` as a hard dependency (audited; `npm audit --omit=dev` clean),
-  so watch-only consumers install it too; ESM consumers tree-shake it when unused.
-- Signing: prefer raw 32-byte keys; when signing a *loaded* PSBT, validate inputs/amounts first (standard
-  PSBT trust rule). `combine` cannot redirect funds — a hostile partner can at worst inject a bogus
-  partial sig that fails finalization (DoS, not theft).
+## [0.2.0] - 2026-11-10
+
+Fixes from the 2026-11-10 package review. Addresses derived from BIP84 keys are byte-identical to 0.1.1.
+
+### Breaking
+- **`zpubToAddress` / `zpubToAddressForAsset` accept BIP84 version bytes only by default** — `zpub`
+  (mainnet) or `vpub` (testnet). Any other SLIP-132 version (`xpub`/`tpub`/`Ltub`/`ttub`/`ypub`/`Mtub`/`upub`)
+  now throws the new `NonBip84KeyError`: those bytes don't say BIP84, so the library can't tell whether the
+  wallet watches the P2WPKH addresses it would derive. Some wallets export real native-segwit (m/84') account
+  keys under other bytes — Bitcoin Core / Litecoin Core descriptor wallets (`xpub`/`tpub`), Ledger Live (`xpub`
+  for BTC, `Ltub` for LTC); for those, pass `{ allowNonBip84: true }` (addresses identical to 0.1.1).
+- **`zpubToAddress` / `zpubToAddressForAsset` accept ACCOUNT keys (depth 3) only by default.** A root, m/84',
+  m/84'/coin', chain-level or address-level key used to derive `<key>/<change>/<index>` silently, giving
+  addresses no wallet watches; it now throws the new `WrongDepthKeyError`. Opt in with
+  `{ allowNonAccountDepth: true }`.
+- **Explicit `null` is no longer a default.** `index: null` / `change: null` (and `asset`/`account`/`network`/
+  `passphrase: null` on the seed side) used to mean 0 / the default; they now throw. Only `undefined` means
+  "use the default".
+- **`ltcLabel: 'Ltub'` removed** (`mnemonicToZpub`, `seedToZpub`, `outputVersionHex`). It serialized a BIP84
+  (`m/84'/2'`) key under Litecoin's BIP44 version `0x019da462`, which the library's own `checkXpub` flagged.
+  SLIP-132 has no Litecoin BIP84 version; LTC keys are emitted as `zpub` (mainnet) / `vpub` (testnet), as
+  before by default. Passing `'Ltub'` now throws; `ZpubOptions.ltcLabel` is typed `'zpub'`. Ltub keys already
+  exported by 0.1.x keep deriving the same addresses with `zpubToAddress(ltub, { allowNonBip84: true })`.
+- **`nostr-nsec-seedphrase` is an optional peer only** (`>=0.8.0 <0.10.0`), no longer an
+  `optionalDependency`, so `npm install nostr-zpub-utils` no longer pulls it (87 packages / 24 MB before).
+  Install it yourself to use `mnemonicToIdentity`.
+- **The `browser` export condition now resolves to the ESM build** (`dist/index.js`); it pointed at an IIFE
+  with no exports, so bundlers got `undefined` for every import. The top-level `browser` field is removed.
+  The IIFE is still built for `<script>` use (`unpkg`/`jsdelivr` fields), now without the seedphrase
+  dependency inlined and without a source map; its global is renamed `NostrZpubUtils`
+  (`NostrZpubUtilities` kept as an alias).
+- Unknown `asset`/`network` values now throw instead of being passed through (an unknown asset used to build
+  the path `m/84'/undefined'`; `psbtNetworkFor` mapped any non-BTC asset to Litecoin).
 
 ### Added
+- `NonBip84KeyError`, `WrongDepthKeyError`, `AddressOptions.allowNonBip84`,
+  `AddressOptions.allowNonAccountDepth`, `BIP84_PUBLIC_VERSION_HEX`.
+- `mnemonicToIdentity(mnemonic, { seedphrase })`: pass the `nostr-nsec-seedphrase` module in explicitly, for
+  bundled apps (browser, Workers). Works with seedphrase 0.8.x (async) and 0.9.x (sync).
+- `engines` (`node >= 20`), `sideEffects: false`, `./package.json` export, `default` export condition.
+
 - **PSBT layer for BTC/LTC (`src/psbt.ts`) — CoinJoin-COMPATIBLE, never a coordinator.** A thin, PURE
   (no network) wrapper over `@scure/btc-signer` for the receiving-side spend. New dependency:
   `@scure/btc-signer` (pinned exact; `npm audit --omit=dev` reported **0 vulnerabilities** at add time).
@@ -54,6 +87,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     hex + txid + explorer hint for the operator to broadcast EXTERNALLY (zpub-utils does not broadcast).
     Missing env for an asset → SKIP. Keys are supplied via env only, never committed. Never run in CI.
   - `qa/` is excluded from the npm tarball (`files` allowlist + `.npmignore`).
+
+### Fixed
+- No runtime code generation in the ESM build or the IIFE. 0.1.1 built a `Function` from a string at module
+  load, so runtimes that forbid code generation (Cloudflare Workers, strict-CSP pages) could not import it.
+  The `Function`-routed `import()` fallback now exists only in the CommonJS build (`dist/cjs/peer-import.js`,
+  reached only when `require` exists and `require()` of the peer fails); a test greps the ESM build and the
+  IIFE for `new Function` / `eval(`.
+- The optional peer is loaded through an indirect specifier, so bundling an app that does not install it no
+  longer fails with "Could not resolve nostr-nsec-seedphrase".
+- `seedToZpub` walks `m/84'/coin'/account'` one level at a time and calls `wipePrivateData()` (zeroes private
+  key and chain code) on every HD node it creates: the master, `m/84'`, `m/84'/coin'` and the account node.
+  `mnemonicToZpub` also zeroes the 64-byte seed it expands (also on error). A seed passed to `seedToZpub` is
+  the caller's and is not touched, and the mnemonic string cannot be wiped. JavaScript cannot guarantee that
+  no other copy of the key material remains in memory (engine or GC copies).
+- `null`/garbage arguments to every public function (including `null` options) produce a clear `Error`, never a
+  raw `TypeError`.
+- Browser IIFE 2.9 MB tarball → no source map and no inlined `nostr-nsec-seedphrase`/`pino`.
+- `npm audit` clean: vitest `^4.1.12`, `overrides.minimatch ^11.0.6`.
+- `@noble/hashes`, `@scure/base`, `@scure/bip32`, `@scure/bip39` aligned to 2.4.0 (the versions
+  `@scure/btc-signer` pins), so one copy of each installs. No behaviour change: addresses re-verified
+  byte-identical to 0.1.1.
+
+### Docs
+- README/SPEC: LTC keys are `zpub`, why (SLIP-132 table), BIP84-only address derivation, optional-peer install,
+  `mnemonicToIdentity` is always account 0 with an empty passphrase.
+
+### Notes
+- The PSBT layer adds `@scure/btc-signer` as a hard dependency (audited; `npm audit --omit=dev` clean),
+  so watch-only consumers install it too; ESM consumers tree-shake it when unused.
+- Signing: prefer raw 32-byte keys; when signing a *loaded* PSBT, validate inputs/amounts first (standard
+  PSBT trust rule). `combine` cannot redirect funds — a hostile partner can at worst inject a bogus
+  partial sig that fails finalization (DoS, not theft).
 
 ## [0.1.1] - 2026-08-29
 

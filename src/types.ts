@@ -1,7 +1,7 @@
 /**
  * Public types for nostr-zpub-utils.
  *
- * The library derives PUBLIC receiving keys (a `zpub`/`Ltub` and the addresses under
+ * The library derives PUBLIC receiving keys (a BIP84 `zpub`/`vpub` and the addresses under
  * it) from the same BIP39 seed root that yields a Nostr identity. Every shape here
  * describes PUBLIC material only — there is no type in this library that carries a
  * seed, an `nsec`, or a private scalar, by design (see SPEC "The one hard boundary").
@@ -40,8 +40,12 @@ export interface ZpubOptions {
   account?: number;
   /** BIP39 passphrase (the "25th word"). Default `''`. */
   passphrase?: string;
-  /** For LTC only: emit the registered `zpub` byte (default) or the Litecoin-definite `Ltub`. */
-  ltcLabel?: 'zpub' | 'Ltub';
+  /**
+   * Output label. Only `'zpub'` (the default) is accepted. The 0.1.x `'Ltub'` option was
+   * removed in 0.2.0 and now throws: SLIP-132 has no Litecoin BIP84 version, and `Ltub`
+   * is the BIP44 byte. LTC native-segwit keys are emitted as `zpub` / `vpub`.
+   */
+  ltcLabel?: 'zpub';
   /** Network. Default `'mainnet'`. */
   network?: ChainNetwork;
 }
@@ -68,17 +72,36 @@ export interface AddressOptions {
    * The chain to encode for. REQUIRED when the key's prefix is ambiguous
    * (`xpub`/`zpub`/`tpub`/`vpub` — shared by BTC and LTC): omitting it throws an
    * {@link AmbiguousAssetError} rather than silently guessing BTC. Optional for a
-   * chain-definite prefix (`Ltub`/`Mtub`/`ttub`/`ypub`/`upub`), where it is
-   * validated against the prefix if given.
+   * chain-definite prefix (`Ltub`/`Mtub`/`ttub`/`ypub`/`upub`, accepted only with
+   * `allowNonBip84`), where it is validated against the prefix if given.
    */
   asset?: ChainAsset;
   /** Assert the key's network. Throws on mismatch. */
   network?: ChainNetwork;
+  /**
+   * Derive BIP84 P2WPKH addresses even when the key's SLIP-132 version is not the
+   * BIP84 one for its network (`zpub` mainnet / `vpub` testnet). Default `false`:
+   * such a key (an `xpub`/`Ltub`/`ypub`/`Mtub`/…) throws a `NonBip84KeyError`,
+   * because its version bytes don't say BIP84 and the library can't tell. Set it
+   * when your wallet exported the key for a native-segwit (m/84') account — Bitcoin
+   * Core / Litecoin Core descriptor wallets (`xpub`/`tpub`) and Ledger Live (`xpub`,
+   * `Ltub`) do.
+   */
+  allowNonBip84?: boolean;
+  /**
+   * Derive below a key whose BIP32 depth is not 3 (not an ACCOUNT key). Default
+   * `false`: such a key throws a `WrongDepthKeyError`, because `<key>/<change>/<index>`
+   * from a root, purpose, coin, chain or address-level key gives addresses no wallet
+   * watches.
+   */
+  allowNonAccountDepth?: boolean;
 }
 
 /**
  * The one-root tie-in: the PUBLIC anchors derived from a single BIP39 mnemonic.
- * Returns `npub` + the two receiving `zpub`s — never an `nsec` or a seed.
+ * Returns `npub` + the two receiving `zpub`s — never an `nsec` or a seed. All three
+ * are account 0 with an empty BIP39 passphrase (NIP-06 `m/44'/1237'/0'/0/0`,
+ * BIP84 `m/84'/0'/0'` and `m/84'/2'/0'`).
  */
 export interface Identity {
   /** NIP-06 Nostr public key (bech32), m/44'/1237'/0'/0/0. */
